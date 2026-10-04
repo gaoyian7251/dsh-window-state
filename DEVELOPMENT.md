@@ -228,12 +228,11 @@ node --check R:\Dsh\dbaWorkspace\dsh-window-state\lib\client.js
 
   或在 DSH「设置 → 插件 → 安装」里填 `github:gaoyian7251/dsh-window-state`；**必须重启桌面客户端**才会加载。
 
-### 9.2 npm（暂缓）
+### 9.2 npm（已放弃）
 
-- 包名 `dsh-window-state` **未被占用**（`npm view dsh-window-state` 返回 `E404`），`package.json` 的 `files` 白名单与 `repository`/`homepage`/`bugs`/`author` 均已就绪，具备发布条件。
-- 但 npm 的 web 登录**仍强制要求交互式 TTY**：`npm login --auth-type=web` 打印 `Login at: https://www.npmjs.com/login?next=/login/cli/<uuid>` 后停在 `Username:` 提示；
-  预置用户名重试（`Get-Content user.txt | npm login …`）同样以 `Username: Password:` 失败退出 1。管道喂数据对 npm 无效。
-- 用户指示暂缓（原话：`npm暂时无法访问，先跳过这步`）。**npm 可用后，进入仓库目录直接 `npm publish` 即可，无需改代码。**
+- 包名 `dsh-window-state` **未被占用**（`npm view dsh-window-state` 返回 `E404`），`package.json` 的 `files` 白名单与 `repository`/`homepage`/`bugs`/`author` 均已就绪，包体也能正常打包（7 文件 / 16.3 kB，`shasum 1df38a45adba2de1365879bf3135962ecab2bffe`）。
+- **但发布在机制上走不通**：该账号（`tfa.mode = auth-and-writes`）的 2FA 只支持**安全密钥 / WebAuthn**（Windows Hello、Touch ID、YubiKey），既没有验证器 App 的动态码，也不会发邮件验证码；非交互终端无法完成验证，`npm publish` 一律返回 403 且不给出任何授权 URL。详见 §9.4。
+- **用户决定放弃 npm 发布**（原话：`算了，我放弃，不往npm上发了`、`这个插件暂时就开发到这`）。分发方式只保留 GitHub 安装：`dsh plugin install github:gaoyian7251/dsh-window-state`。
 
 ### 9.3 本次新增的操作经验
 
@@ -241,3 +240,49 @@ node --check R:\Dsh\dbaWorkspace\dsh-window-state\lib\client.js
 - **gh 的 git 凭证助手**由 `gh auth setup-git` 写入 `credential.https://github.com.helper`（值为 `!'C:\Program Files\GitHub CLI\gh.exe' auth git-credential`）。
 - **`gh auth login` 在非 TTY 下**可用 `Set-Content $env:TEMP\e.txt -Value ""; Get-Content $env:TEMP\e.txt | & gh auth login --hostname github.com --git-protocol https --web` 越过 "Press Enter" 提示；设备码页面仍需人工在浏览器完成授权。
 - **`gh` 不在 DSH 进程的 PATH 内**（winget 装到 `C:\Program Files\GitHub CLI\gh.exe`），脚本里必须用全路径。
+
+### 9.4 npm 发布踩坑（机制性限制，非配置问题）
+
+**1. npm 的 2FA 没有“验证码”**
+
+- 唯一因子是**安全密钥 / WebAuthn**（官方文档 `about-two-factor-authentication.mdx`：*"You will be prompted to authenticate with a security-key… Apple Touch ID, Face ID or Windows Hello… as well as physical keys such as Yubikey"*），**不存在验证器 App 的 6 位动态码**。
+- **邮件 OTP 只在账号未启用 2FA 时用于登录验证**（`receiving-a-one-time-password-over-email.mdx`，邮件主题 *"OTP for logging in to your account"*）。开 2FA 的账号发布时**永远收不到邮件码** → `npm publish --otp=<code>` 不可能成功。
+
+**2. 非交互终端无法完成 WebAuthn**
+
+- `npm publish` / `npm publish --auth-type=web`（npm 11.19 的 auth-type 默认就是 `web`）/ `npm publish --json` 一律返回：
+  `npm error code E403 / 403 Forbidden - PUT https://registry.npmjs.org/dsh-window-state - Two-factor authentication or granular access token with bypass 2fa enabled is required to publish packages.`
+  **不打印任何授权 URL**，也没有第三方工具（keybridge）所述的 `EOTP + authUrl/doneUrl`。
+- 官方唯一可行路径（`configuring-two-factor-authentication.mdx`）：*"If you have enabled 2FA auth-and-writes, authentication will be handled automatically when using security-keys… you will be prompted to authenticate with your configured 2FA method."* → 必须**真人在交互式终端**执行 `npm publish`。
+
+**3. GAT 三处配错，症状被 403/404 掩盖**
+
+`GET https://registry.npmjs.org/-/npm/v1/tokens`（用网页登录 token 裸读）显示 `cidr: ["0.0.0.0/24"]`、`bypass_2fa: false`、`scopes: [@gaoyian, @gaoyian7251]`：
+
+- `scopes` 不含无 scope 的新包名 → npm 用 **404 Not Found** 掩盖“无权限创建新包”；
+- `bypass_2fa: false` → 仍需 2FA；
+- IP 白名单 `0.0.0.0/24` 等于全封 → 连 `GET /-/whoami` 都是 **403 + 空 body**。
+
+正确建法：**Bypass 2FA 开 + Packages and scopes 选 All packages + IP 白名单留空**（npm 已宣布 bypass-2FA token 约 2027-01 起失去直接发布权，属过渡方案）。
+
+**4. 网页登录 ≠ CLI 有凭证**
+
+在 npmjs.com 登录后 `npm whoami` 仍报 `ENEEDAUTH / need auth`，`C:\Users\MSI-Z390\.npmrc` 不存在；必须跑一次 `npm login --auth-type=web` 才会写入 `//registry.npmjs.org/:_authToken=npm_…`（约 12 小时有效，过期后 `npm publish` 报 E401）。
+
+**5. 可复用技法：非 TTY 下驱动 npm 的 web 登录**
+
+- ✅ .NET `System.Diagnostics.ProcessStartInfo` 起 `cmd.exe /c npm login --auth-type=web`，`RedirectStandardInput/Output/Error = $true`、`UseShellExecute = $false`、UTF8；启动约 2 秒后写一个空行满足 "Press ENTER to open in the browser"，再用 `$t = $p.StandardOutput.ReadLineAsync(); $t.Wait(250)` 轮询读输出判 EOF；然后 `Start-Process <URL>` 打开浏览器，用户授权后日志出现 `Logged in on https://registry.npmjs.org/.`。
+- ❌ 管道喂空行（`while($true){Start-Sleep 1; ""} | npm login`）→ npm 完全无输出；
+- ❌ `add_OutputDataReceived(scriptblock)` → `PSInvalidOperationException: 此线程中没有可用于运行脚本的运行空间`（事件回调需要 runspace）；
+- ❌ 非交互下 `npm login --auth-type=web` 打印 URL 后卡在 `Username:` 并退出 1。
+
+**6. 资料获取技法**
+
+`docs.npmjs.com` 是 JS 渲染，`web_fetch` 只拿到导航外壳；应改读源码仓库 `npm/documentation` 的 raw mdx：`https://raw.githubusercontent.com/npm/documentation/main/content/getting-started/setting-up-your-npm-user-account/<file>.mdx`（列目录用 `https://api.github.com/repos/npm/documentation/contents/content/...`）。
+
+**7. 将来若要发布**
+
+- **A（推荐）**：真人在交互式 PowerShell 执行 `cd R:\Dsh\dbaWorkspace\dsh-window-state` 后 `npm publish`，按提示用 Windows Hello 完成验证。
+- **B**：把账号 2FA 从 `auth-and-writes` 改为 `auth-only`（`npm profile enable-2fa auth-only`），此后仅凭 session token 即可发布、无需任何手势；代价是写操作不再强制第二因子。
+- **C**：按第 3 条重建正确的 GAT（过渡方案）。
+- 长期最优：首次人工发布后配置 **Trusted Publishing（GitHub Actions OIDC）**，此后发版无需 token 与验证码。
