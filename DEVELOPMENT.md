@@ -207,3 +207,37 @@ node --check R:\Dsh\dbaWorkspace\dsh-window-state\lib\client.js
 - profile 链接：`C:\Users\MSI-Z390\.dsh\profiles\desktop\node_modules\dsh-window-state`（Junction）
 - profile 清单：`C:\Users\MSI-Z390\.dsh\profiles\desktop\package.json`（`dsh.profile.bundles`）
 - 桌面程序：`R:\Program Files\DeepSeek Harness\resources\app.asar`（`lib/main.js`、`lib/preload-*.cjs`）
+
+---
+
+## 九、发布记录
+
+### 9.1 GitHub（已完成）
+
+- 仓库：<https://github.com/gaoyian7251/dsh-window-state> —— **公开**，默认分支 `main`
+- 提交：
+  - `95c15f4` `feat: dsh-window-state 0.1.0`（8 个文件：`.gitignore`、`DEVELOPMENT.md`、`LICENSE`、`README.md`、`cordis.patch.yml`、`lib/client.js`、`lib/index.js`、`package.json`）
+  - `86c068d` `chore: 补充 repository / homepage / bugs / author 元数据`
+  - `513767d` `docs: README 改为 GitHub 安装方式，补充使用说明`
+- 仓库话题：`dsh`、`dsh-plugin`、`deepseek-harness`、`cordis`、`windows`、`maximize`、`fullscreen`
+- 安装方式（已写进 README）：
+
+  ```powershell
+  dsh plugin install github:gaoyian7251/dsh-window-state
+  ```
+
+  或在 DSH「设置 → 插件 → 安装」里填 `github:gaoyian7251/dsh-window-state`；**必须重启桌面客户端**才会加载。
+
+### 9.2 npm（暂缓）
+
+- 包名 `dsh-window-state` **未被占用**（`npm view dsh-window-state` 返回 `E404`），`package.json` 的 `files` 白名单与 `repository`/`homepage`/`bugs`/`author` 均已就绪，具备发布条件。
+- 但 npm 的 web 登录**仍强制要求交互式 TTY**：`npm login --auth-type=web` 打印 `Login at: https://www.npmjs.com/login?next=/login/cli/<uuid>` 后停在 `Username:` 提示；
+  预置用户名重试（`Get-Content user.txt | npm login …`）同样以 `Username: Password:` 失败退出 1。管道喂数据对 npm 无效。
+- 用户指示暂缓（原话：`npm暂时无法访问，先跳过这步`）。**npm 可用后，进入仓库目录直接 `npm publish` 即可，无需改代码。**
+
+### 9.3 本次新增的操作经验
+
+- **非 TTY 下 `git push` 会静默挂起**：不报错、无输出，卡在凭证交互上（实测 >2 分钟）。加 `$env:GIT_TERMINAL_PROMPT = "0"` 后立刻成功。
+- **gh 的 git 凭证助手**由 `gh auth setup-git` 写入 `credential.https://github.com.helper`（值为 `!'C:\Program Files\GitHub CLI\gh.exe' auth git-credential`）。
+- **`gh auth login` 在非 TTY 下**可用 `Set-Content $env:TEMP\e.txt -Value ""; Get-Content $env:TEMP\e.txt | & gh auth login --hostname github.com --git-protocol https --web` 越过 "Press Enter" 提示；设备码页面仍需人工在浏览器完成授权。
+- **`gh` 不在 DSH 进程的 PATH 内**（winget 装到 `C:\Program Files\GitHub CLI\gh.exe`），脚本里必须用全路径。
