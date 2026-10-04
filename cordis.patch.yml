@@ -1,0 +1,7 @@
+# Bundle patch for dsh-window-state.
+#
+# The row below mounts the plugin as a profile layer; the package's `dsh.client`
+# block (package.json) serves and loads the browser half.
+- insert:
+    - id: dsh-window-state
+      name: dsh-window-state
