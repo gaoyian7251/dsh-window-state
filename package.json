@@ -17,6 +17,15 @@
     "DEVELOPMENT.md",
     "LICENSE"
   ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gaoyian7251/dsh-window-state.git"
+  },
+  "homepage": "https://github.com/gaoyian7251/dsh-window-state#readme",
+  "bugs": {
+    "url": "https://github.com/gaoyian7251/dsh-window-state/issues"
+  },
+  "author": "gaoyian7251",
   "license": "MIT",
   "keywords": [
     "dsh",
