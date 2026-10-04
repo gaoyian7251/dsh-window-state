@@ -25,7 +25,26 @@ DSH 桌面主窗口由 Electron 主进程创建，插件运行时（Host / Clien
 
 ## 安装
 
-在 DSH 的 设置 → 插件 里安装 `dsh-window-state`（或通过 CLI 安装到非 desktop profile）。安装后重启客户端生效。
+**从 GitHub 安装**（推荐，尚未发布到 npm）：
+
+```
+github:gaoyian7251/dsh-window-state
+```
+
+在 DSH 的 **设置 → 插件 → 安装** 里填入上面的标识，或通过 CLI 安装到 profile：
+
+```powershell
+dsh plugin install github:gaoyian7251/dsh-window-state
+```
+
+也可以直接把仓库克隆到 profile 的 `node_modules` 下。**安装后需重启桌面客户端才生效**（profile 的插件图在进程启动时构建）。
+
+## 使用
+
+重启后打开 **设置 → 通用设置**，找到「**启动窗口状态**」一行，选择 **默认 / 最大化 / 全屏**：
+
+- 选择会立刻应用到当前窗口，并持久化，下次启动自动生效；
+- **默认** = 保持 Electron 记住的上次窗口位置与大小。
 
 ## 目录结构
 
