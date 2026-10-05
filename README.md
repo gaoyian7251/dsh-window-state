@@ -46,6 +46,21 @@ dsh plugin install github:gaoyian7251/dsh-window-state
 - 选择会立刻应用到当前窗口，并持久化，下次启动自动生效；
 - **默认** = 保持 Electron 记住的上次窗口位置与大小。
 
+## 常见问题
+
+**从本地路径装过之后，重装报 `ERR_PNPM_EPERM ... rename ..._tmp_... -> ...dsh-window-state`**
+
+用本地路径安装（`dsh plugin install <本地目录>`）时 pnpm 会建立一个 Junction 链接，而卸载时**不会**把它从 `node_modules` 里删掉；之后新版本无法 rename 落位，就会报 `EPERM`。清掉这个链接再装即可（`rmdir` 只删链接，不会动你的源码目录）：
+
+```powershell
+cmd /c rmdir "$env:USERPROFILE\.dsh\profiles\desktop\node_modules\dsh-window-state"
+dsh plugin install github:gaoyian7251/dsh-window-state
+```
+
+从 git 安装的是真实目录，之后卸载 / 升级都不会再有这个问题。
+
+> **⚠️ 只能用 `cmd /c rmdir` 删这个链接。** 不要用 PowerShell 的 `Remove-Item -Recurse`：它会穿透 Junction 去删链接指向的目录 —— 也就是你的插件源码（曾因此把源码仓库的 `.git` 删坏）。
+
 ## 目录结构
 
 ```

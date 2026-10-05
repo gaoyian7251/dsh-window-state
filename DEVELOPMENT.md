@@ -286,3 +286,59 @@ node --check R:\Dsh\dbaWorkspace\dsh-window-state\lib\client.js
 - **B**：把账号 2FA 从 `auth-and-writes` 改为 `auth-only`（`npm profile enable-2fa auth-only`），此后仅凭 session token 即可发布、无需任何手势；代价是写操作不再强制第二因子。
 - **C**：按第 3 条重建正确的 GAT（过渡方案）。
 - 长期最优：首次人工发布后配置 **Trusted Publishing（GitHub Actions OIDC）**，此后发版无需 token 与验证码。
+
+### 9.5 安装/卸载踩坑：本地路径安装残留 Junction → 重装 `ERR_PNPM_EPERM`
+
+**症状**：先用**本地路径**安装（pnpm 记为 `link:`），之后卸载再改从 git 安装时失败：
+
+```
+[ERR_PNPM_EPERM] [importPackage C:\Users\MSI-Z390\.dsh\profiles\desktop\node_modules\dsh-window-state]
+EPERM: operation not permitted, rename '...\dsh-window-state_tmp_8996_4' -> '...\dsh-window-state'
+```
+
+**根因**：`link:` 安装会在 `node_modules` 下建立 **Junction**；`pnpm` 卸载只删掉 `package.json`/lockfile 里的依赖记录（日志写 `Already up to date`），**不会删除磁盘上的 Junction**。随后安装新版时 pnpm 以 `rename(tmp → dsh-window-state)` 落位，而 Windows 不允许把目录改名覆盖到已存在的 Junction 上 → `EPERM`。
+
+**证据（`.plugin-manager\logs`）**：
+
+| 日志 | 内容 |
+| --- | --- |
+| `operation-Uzpxgx` | `+ dsh-window-state link:R:/Dsh/dbaWorkspace/dsh-window-state`（建立 Junction） |
+| `operation-tNLrVE` | `- dsh-window-state link:…` + `Already up to date`，卸载成功但**留下 Junction** |
+| `operation-aSZiYA` | `[ERR_PNPM_EPERM] … rename dsh-window-state_tmp_8996_4` |
+| `operation-EDNWvT` | `dsh-pet` 同样报 `[ERR_PNPM_EPERM]`（残留 `dsh-pet_tmp_*`），说明与具体插件无关 |
+
+**修复**（已在本机执行并验证）：
+
+```powershell
+# 只删链接，不动目标目录。不要用 Remove-Item -Recurse —— 它会跟着删目标内容
+cmd /c rmdir "C:\Users\MSI-Z390\.dsh\profiles\desktop\node_modules\dsh-window-state"
+# 并清掉同批产生的 *_tmp_* 残留目录
+```
+
+清理后 `dsh plugin install github:gaoyian7251/dsh-window-state` 一次成功。git 安装的是**真实目录**（`LinkType` 为空），此后卸载/升级都能被 pnpm 正常替换。
+
+**⚠️ 真实事故（本机，2026-10-05）**：清理 Junction 之前，有人对 `node_modules\dsh-window-state` 用了 PowerShell `Remove-Item -Recurse -Force`。因为它是 Junction，删除**穿透到了源码仓库** `R:\Dsh\dbaWorkspace\dsh-window-state`：`.git` 在字母序最前，`HEAD`/`config`/`index`/`logs`/`hooks`/`info` 被逐个删掉，删到 `objects` 时中断 —— 于是 Junction 本身和其余源码文件都还在，只有 `.git` 被掏空。表现是：
+
+```
+git -C R:\Dsh\dbaWorkspace\dsh-window-state status
+fatal: not a git repository (or any of the parent directories): .git
+# 而 .git 目录确实存在，里面只剩 objects（47 项）与 refs（7 项）
+```
+
+源码仓库未受损（工作区文件完好，`lib/`、`package.json`、`cordis.patch.yml`、`LICENSE` 与 git 安装快照逐字节一致），且远端有全部提交，按下面的方式原地恢复即可（**不会删除任何工作区文件**）：
+
+```powershell
+$env:GIT_TERMINAL_PROMPT = "0"                          # 非 TTY 下必须，否则 git 会静默挂起
+cd R:\Dsh\dbaWorkspace\dsh-window-state
+git init -b main                                        # 重建 HEAD/config/hooks/info，复用残留的 objects
+git remote add origin https://github.com/gaoyian7251/dsh-window-state.git
+git fetch origin
+git reset --mixed origin/main                           # 索引对齐远端 HEAD，本地未提交改动全部保留
+git status --porcelain                                  # 应只剩你自己的未提交改动
+```
+
+**铁律**：对 Junction **永远不要用 `Remove-Item -Recurse`** —— Node 的 `fs.rm` 不穿透链接，PowerShell 的 `Remove-Item -Recurse` 会穿透；删链接只认 `cmd /c rmdir`。
+
+**验证（完整往返）**：卸载 → `node_modules` 无残留、`package.json` 的依赖与 `dsh.profile.bundles` 条目均被移除；再安装 → 目录/依赖/bundle 三处齐备（`dsh-window-state = github:gaoyian7251/dsh-window-state`），`node --check` 对 `lib/index.js`、`lib/client.js` 均通过。
+
+**结论**：优先用 `github:gaoyian7251/dsh-window-state` 安装；只有本地开发才用路径安装，且每次重装前先 `cmd /c rmdir` 掉 Junction。
