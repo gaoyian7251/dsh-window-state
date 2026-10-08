@@ -79,16 +79,19 @@ Test-Path "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
 插件**不假设 PATH / 环境变量是对的**。它按顺序尝试下面这些位置，任何一个能启动就成功：
 
 ```
-%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe   ← 5.1，正常位置
-%ProgramW6432% \PowerShell\7\pwsh.exe                         ← PowerShell 7
-%ProgramFiles% \PowerShell\7\pwsh.exe                         ← 同上（32 位进程视角）
-%ProgramFiles% \PowerShell\7-preview\pwsh.exe                 ← PowerShell 7 预览版
-%LOCALAPPDATA%\Microsoft\WindowsApps\pwsh.exe                 ← 应用商店版 pwsh
-C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe     ← 环境变量取不到时的字面兜底
-C:\Program Files\PowerShell\7\pwsh.exe                        ← 同上
-powershell.exe                                                ← 最后才退回 PATH 查找
-pwsh.exe                                                      ← 同上
+1. <Windows>\System32\WindowsPowerShell\v1.0\powershell.exe   ← 5.1，正常位置
+2. <PF>\PowerShell\7\pwsh.exe                                 ← PowerShell 7
+3. <PF>\PowerShell\7-preview\pwsh.exe                         ← PowerShell 7 预览版
+4. %LOCALAPPDATA%\Microsoft\WindowsApps\pwsh.exe              ← 应用商店版 pwsh 的执行别名
+5. C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe  ← 环境变量取不到时的字面兜底
+6. C:\Program Files\PowerShell\7\pwsh.exe                     ← 同上
+7. powershell.exe                                             ← 最后才退回 PATH 查找
+8. pwsh.exe
+
+<PF> 依次取 %ProgramW6432%、%ProgramFiles%、字面 C:\Program Files
 ```
+
+绝对路径候选会先用 `existsSync` 过滤、按大小写不敏感去重，所以上面这串在多数机器上实际只会保留 2～4 条。
 
 （`%SystemRoot%` 本身取不到时，会依次用 `%windir%`、`%SystemDrive%\Windows`、`C:\Windows`。）
 
