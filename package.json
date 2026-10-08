@@ -1,6 +1,6 @@
 {
   "name": "dsh-window-state",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "窗口启动状态：在 设置 → 通用设置 里选择 DSH 桌面窗口每次启动时以 默认 / 最大化 / 全屏 打开（Windows）。",
   "type": "module",
   "main": "./lib/index.js",

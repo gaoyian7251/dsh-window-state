@@ -21,7 +21,7 @@ DSH 桌面主窗口由 Electron 主进程创建，插件运行时（Host / Clien
 
 - 仅 Windows（依赖 PowerShell + Win32 API）。
 - 全屏是通过剥离窗口边框实现的「伪全屏」，等价于 `BrowserWindow.setFullScreen(true)` 的视觉效果（无系统标题栏、铺满整个显示器）。
-- 依赖 `powershell.exe` 与 `user32.dll`，均为 Windows 自带组件。
+- 依赖 PowerShell（`powershell.exe` 或 `pwsh.exe`）与 `user32.dll`，均为 Windows 自带或可免费安装的组件。**不要求它们出现在 PATH 里**：插件会先探测各个绝对安装位置（含 `%SystemRoot%\System32\WindowsPowerShell\v1.0`、PowerShell 7 / 7-preview、应用商店版 pwsh，以及两个 `C:\` 字面量兜底），全都不可用才退回 PATH 查找。即便如此，PATH 被清理过的机器仍建议修回来——见下面「常见问题」。
 
 ## 安装
 
@@ -47,6 +47,69 @@ dsh plugin install github:gaoyian7251/dsh-window-state
 - **默认** = 保持 Electron 记住的上次窗口位置与大小。
 
 ## 常见问题
+
+### 换台电脑后就不好使了：提示「未能立即应用（spawn powershell.exe ENOENT）」
+
+这台机器的 PATH 里没有 `powershell.exe`。它**不在** `C:\Windows\System32` 根目录，而在 `C:\Windows\System32\WindowsPowerShell\v1.0` —— 只有该子目录出现在 PATH 里时，`spawn('powershell.exe')` 才找得到它（Windows 的 `CreateProcess` / `SearchPathW` 不查 App Paths 注册表）。某些安装器或「PATH 优化 / 清理」工具会把系统 PATH 整段重置，连带丢掉 Windows 默认项，于是换台电脑就失效。
+
+先确认（30 秒）：
+
+```powershell
+cmd /c "where powershell.exe"
+# INFO: Could not find files for the given pattern(s).   ← 就是这个原因
+
+Test-Path "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+# True                                                  ← 文件在，只是不在 PATH
+```
+
+修法（二选一，**改完都必须重启 DSH 桌面客户端**，进程环境变量只在新进程里生效）：
+
+**1. 把目录加回 PATH**（推荐，顺便修好其他依赖 `powershell.exe` 的工具，例如 DSH Market 的「重启应用」）
+
+以管理员身份把下面这一项加回**系统** PATH（「此电脑 → 属性 → 高级系统设置 → 环境变量」的「系统变量 → Path」），加不了管理员就加进**用户** PATH，效果一样：
+
+```
+%SystemRoot%\System32\WindowsPowerShell\v1.0
+```
+
+顺手建议确认 `%SystemRoot%` 和 `%SystemRoot%\System32\Wbem` 也在。
+
+**2. 依赖插件自带的解释器探测与环境修正**（v0.1.1+ 起）
+
+插件**不假设 PATH / 环境变量是对的**。它按顺序尝试下面这些位置，任何一个能启动就成功：
+
+```
+%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe   ← 5.1，正常位置
+%ProgramW6432% \PowerShell\7\pwsh.exe                         ← PowerShell 7
+%ProgramFiles% \PowerShell\7\pwsh.exe                         ← 同上（32 位进程视角）
+%ProgramFiles% \PowerShell\7-preview\pwsh.exe                 ← PowerShell 7 预览版
+%LOCALAPPDATA%\Microsoft\WindowsApps\pwsh.exe                 ← 应用商店版 pwsh
+C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe     ← 环境变量取不到时的字面兜底
+C:\Program Files\PowerShell\7\pwsh.exe                        ← 同上
+powershell.exe                                                ← 最后才退回 PATH 查找
+pwsh.exe                                                      ← 同上
+```
+
+（`%SystemRoot%` 本身取不到时，会依次用 `%windir%`、`%SystemDrive%\Windows`、`C:\Windows`。）
+
+所以只装一个 PowerShell 7 也能用：
+
+```powershell
+winget install --id Microsoft.PowerShell
+```
+
+另外，插件在起子进程前会**修正子进程的环境变量**，而不是原样透传：
+
+- **PATH**：缺哪补哪，把 `%SystemRoot%\System32`、`%SystemRoot%`、`%SystemRoot%\System32\Wbem`、`…\WindowsPowerShell\v1.0` 补到最前，**不删你原有的任何条目**；
+- **`SystemRoot` / `windir`**：父进程缺就按同样的回落链补上；
+- **`TEMP` / `TMP`**：指向不存在的目录时改用系统临时目录（`Add-Type` 每次都要编译 C#，需要可写的临时目录）；
+- 环境变量名在 Windows 上大小写不统一（`Path` / `PATH`），插件做大小写不敏感读写，不会产生重复键。
+
+只有所有候选都起不来时才会报错，此时设置行会明确告诉你：
+
+> 本机启动不了 PowerShell：%SystemRoot%\System32\WindowsPowerShell\v1.0 下没有 powershell.exe，PATH 里也找不到 powershell.exe 或 pwsh.exe。请把该目录加回 PATH，或安装 PowerShell 7，然后重启 DSH
+
+而不是只丢一个 `ENOENT`。
 
 **从本地路径装过之后，重装报 `ERR_PNPM_EPERM ... rename ..._tmp_... -> ...dsh-window-state`**
 

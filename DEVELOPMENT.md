@@ -342,3 +342,120 @@ git status --porcelain                                  # 应只剩你自己的�
 **验证（完整往返）**：卸载 → `node_modules` 无残留、`package.json` 的依赖与 `dsh.profile.bundles` 条目均被移除；再安装 → 目录/依赖/bundle 三处齐备（`dsh-window-state = github:gaoyian7251/dsh-window-state`），`node --check` 对 `lib/index.js`、`lib/client.js` 均通过。
 
 **结论**：优先用 `github:gaoyian7251/dsh-window-state` 安装；只有本地开发才用路径安装，且每次重装前先 `cmd /c rmdir` 掉 Junction。
+
+## 十、换机失效事故：系统 PATH 缺 `WindowsPowerShell\v1.0`（2026-10-08）
+
+### 10.1 症状
+
+换到新电脑（新机用户目录 `C:\Users\Ds`；旧机是 `C:\Users\MSI-Z390`）后插件「不好使」：设置行还在、也能选「最大化 / 全屏」，但点下去提示「未能立即应用（spawn powershell.exe ENOENT）」，开机注入脚本的 `fetch` 也静默失败。
+
+两个半其实都**加载正常**：Host 侧 `plugin_manager` 显示 `fiberPhase: "active"`，Client 侧 `settings.general.item` 的 occupants 里有 `{ registrant: "dsh-window-state", id: "dsh-window-state", order: 25, active: true }`；插件目录与仓库 HEAD 逐字节一致，安装日志（`.plugin-manager/logs/operation-e5SzKu/pnpm.log`）也是一次成功。所以问题不在加载、不在安装。
+
+### 10.2 根因
+
+`lib/index.js` 用**裸名** spawn：`spawn('powershell.exe', ['-NoProfile', …])`。
+
+`powershell.exe` 并**不**在 `%SystemRoot%\System32` 根目录，而在 `%SystemRoot%\System32\WindowsPowerShell\v1.0` 子目录。Windows 的 `CreateProcess` / `SearchPathW` 搜索顺序是「父进程目录 → 当前目录 → System32 → Windows 目录 → PATH」，且**不查 `App Paths` 注册表**（那只对 `ShellExecute` 生效）。所以该子目录一旦不在 PATH 里，Node 必然 `ENOENT`，插件所有窗口操作全部落空。
+
+新机的 PATH 被整段重置过（Oracle 客户端、Kingbase、maven、PostgreSQL、Git、gradle、cygwin…… 一长串应用目录），丢掉了 Windows 默认项：
+
+| 位置 | 缺失项 |
+| --- | --- |
+| `HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment` → `Path` | `%SystemRoot%\System32\WindowsPowerShell\v1.0`、`%SystemRoot%`、`%SystemRoot%\System32\Wbem` |
+| `HKCU\Environment` → `Path` | 同样都没有 |
+
+旧机 PATH 是出厂默认（含这些项），所以一直好用 —— 这就是「换了台电脑就不好使」的全部原因。
+
+### 10.3 证据链
+
+| 探针 | 结果 |
+| --- | --- |
+| `cmd /c "where powershell.exe"` | `INFO: Could not find files for the given pattern(s).`，exit=1 |
+| `cmd /c "where pwsh.exe"` | 命中 `…\WindowsApps\Microsoft.PowerShell_7.6.6.0_x64__8wekyb3d8bbwe\pwsh.exe`，exit=0 |
+| `Test-Path "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"` | True —— 文件在，只是不在 PATH |
+| 进程链 | `pwsh.exe(14608) ← DeepSeek Harness.exe(9736) ← (17748) ← (17432) ← explorer.exe(10028)`：探针是 DSH Host 的**直接子进程**，继承的就是 Host 自己的环境块，排除「只是我的 shell 环境特殊」 |
+| Node 复现（`_probe_spawn.mjs`，与插件**同款** spawn 参数 `windowsHide:true, stdio:['ignore','pipe','pipe']`） | A) `spawn('powershell.exe')` → `ERROR code=ENOENT message=spawn powershell.exe ENOENT`；B) 绝对路径 → `closed code=0 stdout="5.1.19041.6456"`；C) `spawn('pwsh.exe')` → `closed code=0 stdout="7.6.6"`；`PATH has WindowsPowerShell\v1.0 = false` |
+| 插件 PowerShell 体本身（`_probe_locate.ps1`：逐字照抄 `Add-Type` 定义 + `EnumWindows` 定位，**只定位不修改窗口**） | `RESULT: found hwnd=395280 zoomed=True iconic=False style=0x15C70000 screen=1920x1080`，`PSVersion=5.1.19041.6456 Edition=Desktop` —— 脚本没问题，纯粹是解释器找不到 |
+
+顺带确认了标题消歧是必要的：本机同时存在 `hwnd=1902506 title="dsh-pet 桌宠（桌面模式）"`，窗口类同为 `Chrome_WidgetWin_1`，靠 `$t -match 'DeepSeek Harness'` 才能选中主窗口。
+
+**同一个坑的连带影响**：`dshmarket/lib/restart.js:299` 也是 `file: 'powershell.exe'`，所以 DSH Market 的「重启应用」在这台机器上同样失效 —— 可作为快速旁证。
+
+### 10.4 修复
+
+**（a）插件侧：解释器回落链**（`lib/index.js`）
+
+新增 `powershellCandidates()` 返回有序候选，`applyState()` 逐个 spawn：只有「解释器本身起不来」的错误才换下一个候选；其他错误（脚本超时、脚本报错、`window-not-found`）立即返回，不重试。
+
+第一版只做了 4 个候选（5.1 绝对路径、PowerShell 7、`powershell.exe`、`pwsh.exe`），且只对 `ENOENT` 重试；后来为「换任何一台机器都不该失效」做了加固，**最终实现见 §11**。全部候选都起不来时返回可诊断的中文提示（`NO_POWERSHELL_HINT`），而不是把 `spawn powershell.exe ENOENT` 直接甩进设置行。总预算仍是 8s（`APPLY_TIMEOUT_MS`），每次尝试的超时取「剩余预算」，避免重试把总时长翻倍。
+
+**（b）机器侧：补回 PATH**
+
+把 `%SystemRoot%\System32\WindowsPowerShell\v1.0` 加回 PATH（本机已执行，系统 PATH 已同时补回 `%SystemRoot%` 与 `%SystemRoot%\System32\Wbem`）。改 PATH 只影响**新进程**，所以必须重启 DSH 桌面客户端；重启前插件靠回落链（a）也能正常工作。
+
+### 10.5 顺手修掉的潜伏 bug
+
+`lib/index.js` 的 `default` 分支原本是：
+
+```powershell
+$flags = 0x20 -bor 0x4          # SWP_FRAMECHANGED | SWP_NOZORDER
+[void][DshWin]::SetWindowPos($hwnd, [IntPtr]::Zero, 0, 0, 0, 0, $flags)
+```
+
+`0x20 | 0x4` 里**没有** `SWP_NOMOVE(0x2)` / `SWP_NOSIZE(0x1)`，却把 x/y/cx/cy 全传 0 —— 会把窗口挪到 (0,0) 并缩成 0×0。已改为 `0x20 -bor 0x4 -bor 0x2 -bor 0x1`。
+
+**注意：这个分支目前打不到。** `lib/client.js` 选中「默认」时直接 return、不发请求，`lib/index.js` 的注入脚本对 `default` 也不发 `fetch`（`if(s!=="default")`），所以只有手工 POST `/dsh-window-state/apply` 才会触发。属于「哪天顺手改了就爆」的雷，一并补上。
+
+### 10.6 教训
+
+- **不要用裸名 spawn Windows 自带可执行文件。** `powershell.exe`、`wmic.exe`、`where.exe` 是否在 PATH 里取决于机器，不取决于 Windows 版本。要么用 `%SystemRoot%\System32\...` 绝对路径，要么带回落链。
+- **「换台电脑就不好使」优先怀疑环境依赖，而不是代码逻辑。** 本插件唯一的机器相关依赖就是 PATH 能否解析 `powershell.exe`；窗口定位条件（类 + 标题 + 可见）在新机上是满足的。
+- 排查顺序建议：进程链确认环境继承 → `where` 确认解析 → 读注册表 PATH 确认源头 → Node 侧同款 spawn 参数做最小复现 → 最后才怀疑业务脚本。
+- 只在 PATH 里补 `C:\Windows\System32` 是**不够**的：`powershell.exe` 从来不在那个目录里。
+
+## 十一、跨机器通用性加固：解释器探测 + 子进程环境修正（v0.1.1）
+
+> 起因：用户要求「确保该插件的通用性，避免在其他机器上因为环境变量不同导致插件功能失效」。§10 的修复只覆盖了「PATH 里没有 `WindowsPowerShell\v1.0`」这一种环境差异，而且仍把一个可能残缺的环境块原样传给了子进程。
+
+### 11.1 加固点一：候选清单不再押注单一环境变量
+
+`powershellCandidates(env = process.env)` 的候选顺序（绝对路径经 `existsSync` 过滤、大小写不敏感去重，列表末尾永远保留两个裸名做 PATH 查找）：
+
+| # | 位置 | 取自 |
+|---|---|---|
+| 1 | `<Windows>\System32\WindowsPowerShell\v1.0\powershell.exe` | `SystemRoot` → `windir` → `SystemDrive`+`\Windows` → `C:\Windows` |
+| 2–5 | `…\PowerShell\7\pwsh.exe`、`…\PowerShell\7-preview\pwsh.exe` | `ProgramW6432`、`ProgramFiles`、字面 `C:\Program Files` |
+| 6 | `%LOCALAPPDATA%\Microsoft\WindowsApps\pwsh.exe` | `LOCALAPPDATA`（应用商店版 pwsh 的执行别名） |
+| 7 | `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe` | 字面量兜底 |
+| 8 | `C:\Program Files\PowerShell\7\pwsh.exe` | 字面量兜底 |
+| 9 | `powershell.exe` | PATH 查找 |
+| 10 | `pwsh.exe` | PATH 查找 |
+
+`windowsDir()` 的回落链让「环境块被清空 / 撒谎 / 只有 `SystemDrive`」的机器也能定位系统目录。两个 `C:\` 字面量则让**完全空的环境块**在标准 Windows 上仍然可用。
+
+### 11.2 加固点二：修正子进程环境，而不是原样透传
+
+`childEnvironment(state, env = process.env)` 构造子进程环境时修三处：
+
+- **PATH**：缺失才补、且**不删用户任何条目** —— 把 `<Windows>\System32`、`<Windows>`、`<Windows>\System32\Wbem`、`<Windows>\System32\WindowsPowerShell\v1.0` 前置到 PATH 最前（与 Windows 自身搜索顺序一致）。这条同时消除了「父进程 PATH 缺项 → 子进程自己也起不来/加载不了依赖」的隐患。
+- **`SystemRoot` / `windir`**：父进程缺就用 `windowsDir()` 的结果补上。
+- **`TEMP` / `TMP`**：指向不存在的目录时改用 `os.tmpdir()`。`Add-Type` 每次运行都要编译 C#，没有可写临时目录会以「无法写入输出文件」之类的方式整体失败。
+- 配套 `envValue()` / `setEnvValue()` 做**大小写不敏感**读写：`Path`、`PATH`、`path` 在不同机器上都出现过，直接 `env.PATH = x` 会在 `{ ...process.env }` 上留下两个只差大小写的键，让子进程环境产生歧义。
+
+### 11.3 加固点三：重试判据从 `ENOENT` 放宽到「解释器起不来」
+
+`RETRYABLE_SPAWN_CODES = ['ENOENT', 'EACCES', 'EPERM']`。`EACCES`/`EPERM` 覆盖「文件在但被安全策略拦住（AppLocker/WDAC）」和「WindowsApps 别名是坏的」。业务层错误（脚本超时、脚本报错、`window-not-found`）依旧**不**重试 —— 换解释器不会让它们变好。
+
+### 11.4 验证
+
+- **spawn 替身**（`node --import file:///…/_e2e_shim.mjs`，见 §5.3）驱动真实插件的重试循环：
+  - `SHIM_MODE=first-enoent` 且父进程 `PATH` 里**没有** `WindowsPowerShell`：`attempt#1` 绝对路径被伪造为 ENOENT → `attempt#2` 裸名 `powershell.exe` **成功**。替身日志同时显示 `childPath-hasWindowsPowerShell=true`，即子进程 PATH 确实被修正过（父进程那份是没有的）→ `HTTP 200 {"ok":true,…}`。
+  - `SHIM_MODE=all-enoent`：3 次尝试后 `HTTP 500` + `NO_POWERSHELL_HINT`。
+- **纯函数单测** `E:\dsh\dsh_workspace\_ws_evidence\_unit_env.mjs`：把 `lib/index.js` 去掉 `import`/`export` 后丢进 `node:vm` 上下文，直接调用未导出的 `windowsDir` / `envValue` / `childEnvironment` / `powershellCandidates`，21 项断言全过 —— 覆盖每条回落链、大小写、补 PATH 不丢用户条目、坏 `TEMP` 替换、空环境仍给出字面量候选、候选去重。
+- ⚠️ **不能拿 `SystemRoot` 当测试杠杆**：Node 24.14.1 在 `SystemRoot` 缺失或撒谎时会自己崩掉 —— `Assertion failed: ncrypto::CSPRNG(nullptr, 0)`，exit 134，栈顶 `node::InitializeOncePerProcessInternal … src\node.cc:1221`（同一环境下 `node --version` 却正常）。这是 Node 自身的脆弱点，与插件无关，所以改用 vm 单测。
+
+### 11.5 教训
+
+- **「环境变量」不止 PATH 一个。** `SystemRoot` / `windir` / `SystemDrive` / `ProgramFiles` / `ProgramW6432` / `LOCALAPPDATA` / `TEMP` 都会在别人的机器上以你没想到的方式出错。要么给回落链，要么自己补齐，别假设它们是好的。
+- **Windows 环境变量名大小写不统一**（`Path` vs `PATH`）；在 Node 里 `{ ...process.env }` 之后按键名写回会产生重复键，必须做大小写不敏感读写。
+- 想验证「环境变量坏掉时会怎样」，**优先用测试替身（拦截 spawn / 注入假 env）而不是真的去破坏当前进程的环境** —— 破坏宿主环境经常先把运行时本身搞崩，测不到被测代码。
